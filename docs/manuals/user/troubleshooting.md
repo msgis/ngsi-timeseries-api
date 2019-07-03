@@ -46,6 +46,35 @@ Make sure you have enough data points in your database and that your selection
 of time slice (on the top-right corner of grafana) is actually covering a time
 range in which you have data.
 
+#### One column got the wrong data type
+
+This may happen when the first notification arrives with wrong types for some attributes. You may wonder how can I fix the table without loosing data?
+
+For the time being, crate does not support `drop column`. Hence, you will need to:
+
+1. [Export your data](https://crate.io/docs/crate/reference/en/latest/sql/statements/copy-to.html). E.g., enter the crate container, execute the `crash` command line and then...
+
+    ```
+    cr> COPY mtyourtenanthere.etyourentitytypehere to DIRECTORY '/tmp/' with (compression='gzip');
+    COPY OK, 1684 rows affected  (0.203 sec)
+    ```
+
+2. Delete your table (**warning:** only if the previous command succeeded)
+
+    ```
+    cr> DROP table mtyourtenanthere.etyourentitytypehere;
+    DROP TABLE OK, 1 row affected (0.049 sec)
+    ```
+
+3. Recreate the table with the right column types. You can let QL do this for you provided that you send a notification with the correct types.
+
+4. Import data back into the new table.
+
+    ```
+    cr> copy mtekz.etairqualityobserved from 'file:///tmp/etairqualityobserved*.gz' with (compression='gzip');
+    COPY OK, 1684 rows affected  (1.798 sec)
+    ```
+
 ## Bug reporting
 
 Bugs should be reported in the form of
