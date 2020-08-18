@@ -27,31 +27,32 @@ interest and make QL actually perform the corresponding subscription to orion.
 I.e, QL must be told where orion is.
 """
 from flask import request
-from geocoding.geocache import GeoCodingCache
+from geocoding import geocoding
+from geocoding.factory import get_geo_cache, is_geo_coding_available
 from requests import RequestException
-from translators.crate import NGSI_TO_CRATE, NGSI_TEXT
+from translators.sql_translator import SQLTranslator
 from translators.factory import translator_for
 from utils.common import iter_entity_attrs, TIME_INDEX_NAME
 import json
 import logging
-import os
 import requests
 from reporter.subscription_builder import build_subscription
 from reporter.timex import select_time_index_value_as_iso, \
     TIME_INDEX_HEADER_NAME
 from geocoding.location import normalize_location
+from utils.cfgreader import EnvReader, StrVar
 
 
 def log():
-    logging.basicConfig(level=logging.INFO)
+    r = EnvReader(log=logging.getLogger(__name__).info)
+    level = r.read(StrVar('LOGLEVEL', 'INFO')).upper()
+
+    logging.basicConfig(level=level)
     return logging.getLogger(__name__)
 
 
 def is_text(attr_type):
-    return attr_type == NGSI_TEXT or attr_type not in NGSI_TO_CRATE
-    # TODO: same logic in two different places!
-    # The above kinda reproduces the tests done by the translator, we should
-    # factor this logic out and keep it in just one place!
+    return SQLTranslator.is_text(attr_type)
 
 
 def has_value(entity, attr_name):
@@ -107,7 +108,7 @@ def _validate_payload(payload):
   
 
 def _filter_empty_entities(payload):
-    log().info('Received payload: {}'.format(payload))
+    log().debug('Received payload: {}'.format(payload))
     attrs = list(iter_entity_attrs(payload))
     Flag = False
     attrs.remove('time_index')
@@ -123,7 +124,21 @@ def _filter_empty_entities(payload):
         return None
  
 
+def _filter_no_type_no_value_entities(payload):
+    attrs = list(iter_entity_attrs(payload))
+    attrs.remove('time_index')
+    for i in attrs:
+        attr = payload.get(i, {})
+        attr_value = attr.get('value', None)
+        attr_type = attr.get('type', None)
+        if not attr_type and not attr_value:
+            del payload[i]
+
+    return payload
+
+
 def notify():
+
     if request.json is None:
         return 'Discarding notification due to lack of request body. ' \
                'Lost in a redirect maybe?', 400
@@ -165,29 +180,26 @@ def notify():
         # Validate entity update
         e = _filter_empty_entities(entity)
         if e is not None:
-            res_entity.append(e)
+            e_new = _filter_no_type_no_value_entities(e)
+            res_entity.append(e_new)
     payload = res_entity
     
     # Send valid entities to translator
-    with translator_for(fiware_s) as trans:
-        trans.insert(payload, fiware_s, fiware_sp)
-
+    try:
+        with translator_for(fiware_s) as trans:
+            trans.insert(payload, fiware_s, fiware_sp)
+    except:
+        msg = "Notification not processed or not updated"
+        log().error(msg)
+        return msg, 500
     msg = 'Notification successfully processed'
     log().info(msg)
     return msg
 
 
 def add_geodata(entity):
-    # TODO: Move this setting to configuration (See GH issue #10)
-    use_geocoding = os.environ.get('USE_GEOCODING', False)
-    redis_host = os.environ.get('REDIS_HOST', None)
-
-    # No cache -> no geocoding by default
-    if use_geocoding and redis_host:
-        redis_port = os.environ.get('REDIS_PORT', 6379)
-        cache = GeoCodingCache(redis_host, redis_port)
-
-        from geocoding import geocoding
+    if is_geo_coding_available():
+        cache = get_geo_cache()
         geocoding.add_location(entity, cache=cache)
 
 
